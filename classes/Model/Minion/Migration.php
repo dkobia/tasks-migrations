@@ -12,6 +12,12 @@ class Model_Minion_Migration extends Model
 	protected $_db = NULL;
 
 	/**
+	 * Database type (MySQL / PostgreSQL)
+	 * @var Kohana_Database
+	 */
+	protected $_db_type = NULL;
+
+	/**
 	 * The table that's used to store the migrations
 	 * @var string
 	 */
@@ -26,6 +32,7 @@ class Model_Minion_Migration extends Model
 	public function __construct(Kohana_Database $db)
 	{
 		$this->_db = $db;
+		$this->_db_type = Kohana::$config->load('database.default.type');
 
 		$this->_table = Kohana::$config->load('minion/migration.table');
 	}
@@ -167,11 +174,18 @@ class Model_Minion_Migration extends Model
 	 */
 	public function ensure_table_exists()
 	{
-		$query = $this->_db->query(Database::SELECT, "SHOW TABLES like '".$this->_table."'");
+		if ($this->_db_type == 'MySQL')
+		{
+			$query = $this->_db->query(Database::SELECT, "SHOW TABLES like '".$this->_table."'");
+		}
+		elseif ($this->_db_type == 'PostgreSQL')
+		{
+			$query = $this->_db->query(Database::SELECT, "SELECT * FROM pg_catalog.pg_tables WHERE tablename = '".$this->_table."'");
+		}
 
 		if ( ! count($query))
 		{
-			$sql = View::factory('minion/task/migrations/schema')
+			$sql = View::factory('minion/task/migrations/schema/'.$this->_db_type)
 				->set('table_name', $this->_table)
 				->render();
 
@@ -230,7 +244,14 @@ class Model_Minion_Migration extends Model
 	 */
 	protected function _select()
 	{
-		return DB::select('*', DB::expr('CONCAT(`group`, ":", CAST(`timestamp` AS CHAR)) AS `id`'))->from($this->_table);
+		if ($this->_db_type == 'MySQL')
+		{
+			return DB::select('*', DB::expr('CONCAT(`group`, ":", CAST(`timestamp` AS CHAR)) AS `id`'))->from($this->_table);
+		}
+		elseif ($this->_db_type == 'PostgreSQL')
+		{
+			return DB::select('*', DB::expr('\'group\' || \':\' || CAST(timestamp AS CHAR) AS id'))->from($this->_table);
+		}
 	}
 
 	/**
@@ -372,16 +393,34 @@ class Model_Minion_Migration extends Model
 	public function fetch_current_versions($key = 'group', $value = NULL)
 	{
 		// Little hack needed to do an order by before a group by
-		return DB::select()
-			->from(array(
-				$this->_select()
-				->where('applied', '>', 0)
-				->order_by('timestamp', 'DESC'),
-				'temp_table'
-			))
-			->group_by('group')
-			->execute($this->_db)
-			->as_array($key, $value);
+		if ($this->_db_type == 'MySQL')
+		{
+			return DB::select()
+				->from(array(
+					$this->_select()
+					->where('applied', '>', 0)
+					->order_by('timestamp', 'DESC'),
+					'temp_table'
+				))
+				->group_by('group')
+				->execute($this->_db)
+				->as_array($key, $value);
+		}
+		elseif ($this->_db_type == 'PostgreSQL')
+		{
+			return DB::select()
+				->select('group')->distinct(TRUE)
+				->select('*')
+				->from(array(
+					$this->_select()
+					->where('applied', '>', 0)
+					->order_by('timestamp', 'DESC'),
+					'temp_table'
+				))
+				->order_by('group')
+				->execute($this->_db)
+				->as_array($key, $value);
+		}
 	}
 
 	/**
@@ -391,11 +430,24 @@ class Model_Minion_Migration extends Model
 	 */
 	public function fetch_groups($group_as_key = FALSE)
 	{
-		return DB::select()
-			->from($this->_table)
-			->group_by('group')
-			->execute($this->_db)
-			->as_array($group_as_key ? 'group' : NULL, 'group');
+		if ($this->_db_type == 'MySQL')
+		{
+			return DB::select()
+				->from($this->_table)
+				->group_by('group', 'timestamp')
+				->execute($this->_db)
+				->as_array($group_as_key ? 'group' : NULL, 'group');
+		}
+		elseif ($this->_db_type == 'PostgreSQL')
+		{
+			return DB::select()
+				->select('group')->distinct(TRUE)
+				->select('*')
+				->from($this->_table)
+				->order_by('group')
+				->execute($this->_db)
+				->as_array($group_as_key ? 'group' : NULL, 'group');
+		}
 	}
 
 	/**
